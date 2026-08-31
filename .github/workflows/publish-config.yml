@@ -36,7 +36,7 @@ permissions:
 
 concurrency:
   group: publish-config
-  cancel-in-running: false
+  cancel-in-progress: false
 
 jobs:
   publish:

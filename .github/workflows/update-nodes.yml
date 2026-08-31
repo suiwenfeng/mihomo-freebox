@@ -18,7 +18,7 @@ permissions:
 concurrency:
   group: update-nodes
   # Don't cancel: a node refresh must run to completion.
-  cancel-in-running: false
+  cancel-in-progress: false
 
 jobs:
   crawl:
