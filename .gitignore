@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Local runtime artefacts
+*.log
+*.pid
+providers/proxies.yaml.new
+rules/
+rules/**/*.yaml
+tmp_home*/
+
+# Editor / tooling
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Container / tooling caches
+.cache/
+
+crawler/target/

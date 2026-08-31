@@ -1,0 +1,244 @@
+# =============================================================================
+# mihomo-freebox — generated Clash.Meta configuration.
+#
+# This is a *template*: ci/docker/render_config.py substitutes the ${VAR}
+# tokens from environment variables at container start, then mihomo is handed
+# the rendered config.yaml.  Swapping a variable (e.g. RULESET_BASE_URL) is the
+# only thing needed to retarget rule/rule-set sources.
+#
+# Data flow
+#  - proxies : NEVER embedded here.  They live in ${PROVIDERS_DIR}/proxies.yaml
+#    which the crawler rewrites on every start, so `restart: always` always
+#    pulls the latest free nodes before mihomo comes up.
+#  - geo data: auto-downloaded by mihomo from its built-in default
+#    (MetaCubeX/meta-rules-dat latest release) -> GEOSITE/GeoIP rules work
+#    with no extra URLs.
+#  - rule sets: fetched lazily from ${RULESET_BASE_URL} (MetaCubeX CDN by
+#    default); a miss only empties that one set, it never blocks startup.
+#
+# Layout
+#  - mixed proxy        : ${MIXED_PORT}        (default 7890)
+#  - Clash API (local)  : 127.0.0.1:${CONTROLLER_PORT}  (proxied to public :${API_PORT})
+#  - dashboard (UI)     : served from ${EXTERNAL_UI} on :${API_PORT} by dashboard.py
+# =============================================================================
+mixed-port: ${MIXED_PORT}
+allow-lan: ${ALLOW_LAN}
+bind-address: "*"
+mode: global
+log-level: ${LOG_LEVEL}
+ipv6: false
+# The bundled MetaCubeXD dashboard (served on :${API_PORT}) reverse-proxies
+# same-origin to this local Clash API, so no CORS allow-list is required.
+external-controller: ${CONTROLLER_HOST}:${CONTROLLER_PORT}
+secret: "${SECRET}"
+external-ui: ${EXTERNAL_UI}
+profile:
+  store-selected: true
+  store-fakeip: true
+  store-rules: true
+  trace: false
+  trace-timeout: 10s
+
+# DNS — public resolvers for clean names, fake-ip for geo-routed ones.
+# Using well-known public DNS (not link-local 169.254.x which is unavailable in
+# containers) so name resolution works everywhere.
+dns:
+  enable: true
+  listen: 127.0.0.1:1053
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.0/16
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+    - 1.1.1.1
+    - 8.8.8.8
+  proxy-server-nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+  fallback:
+    - https://1.1.1.1/dns-query
+    - https://dns.google/dns-query
+  fake-ip-filter:
+    - "+.lan"
+    - "+.localdomain"
+    - "+.internal"
+    - "*.lan"
+    - "*.local"
+    - time.windows.com
+    - time.apple.com
+    - ntp.org
+    - "*.ntp.org"
+
+# Geo data auto-downloads from the MetaCubeX/meta-rules-dat release via a
+# jsDelivr CDN mirror (reachable behind the GFW).  The Dockerfile also
+# pre-downloads these into the image as a fast-path, but geox-url lets mihomo
+# refresh them at runtime.
+geodata-mode: true
+geox-url:
+  geoip: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
+  geosite: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
+  mmdb: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
+  asn: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"
+
+# Proxy providers.  `free-nodes` is a local file rewritten by the crawler on
+# every start -> restart:always always sees fresh nodes.
+proxy-providers:
+  free-nodes:
+    type: file
+    path: ${PROVIDERS_DIR}/proxies.yaml
+    include-name: true
+    health-check:
+      enable: true
+      interval: 300
+      lazy: true
+      url: http://www.gstatic.com/generate_204
+
+# Regional selectors pick a stable exit; `Proxy` load-balances the rest.
+proxy-groups:
+  - name: Proxy
+    type: url-test
+    use:
+      - free-nodes
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 0
+    lazy: true
+    max-failed-times: 3
+  - name: Domestic
+    type: url-test
+    use:
+      - free-nodes
+    url: http://www.gstatic.com/generate_204
+    interval: 600
+    lazy: true
+    filter: '.*(港|HK|香港|澳|MO|台|TW|台湾|新加坡|SG|新西兰|NZ).*$'
+  - name: 香港 HongKong
+    type: url-test
+    use:
+      - free-nodes
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    lazy: true
+    filter: '.*(港|HK|香港).*$'
+  - name: 台湾 Taiwan
+    type: url-test
+    use:
+      - free-nodes
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    lazy: true
+    filter: '.*(台|TW|台湾).*$'
+  - name: 日本 Japan
+    type: url-test
+    use:
+      - free-nodes
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    lazy: true
+    filter: '.*(日|JP|日本).*$'
+  - name: 新加坡 Singapore
+    type: url-test
+    use:
+      - free-nodes
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    lazy: true
+    filter: '.*(新加坡|SG).*$'
+  - name: 美国 UnitedStates
+    type: url-test
+    use:
+      - free-nodes
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    lazy: true
+    filter: '.*(美国|US).*$'
+  - name: 选择出口 Select
+    type: select
+    proxies:
+      - Proxy
+      - 香港 HongKong
+      - 台湾 Taiwan
+      - 日本 Japan
+      - 新加坡 Singapore
+      - 美国 UnitedStates
+      - Domestic
+      - DIRECT
+
+# Rule providers (MetaCubeX RuleSet, daily updated). Lazy-loaded at runtime.
+rule-providers:
+  geosite-category-block:
+    type: http
+    behavior: classical
+    url: "${RULESET_BASE_URL}/geosite-category-block.min.yaml"
+    path: ./rules/geosite-category-block.yaml
+    cache-length: 50400
+    cache-ttl: 86400
+  geosite-category-hijacking:
+    type: http
+    behavior: classical
+    url: "${RULESET_BASE_URL}/geosite-category-hijacking.min.yaml"
+    path: ./rules/geosite-category-hijacking.yaml
+    cache-length: 50400
+    cache-ttl: 86400
+  geosite-category-gfw:
+    type: http
+    behavior: classical
+    url: "${RULESET_BASE_URL}/geosite-category-gfw.min.yaml"
+    path: ./rules/geosite-category-gfw.yaml
+    cache-length: 50400
+    cache-ttl: 86400
+  geosite-category-proxy:
+    type: http
+    behavior: classical
+    url: "${RULESET_BASE_URL}/geosite-category-proxy.min.yaml"
+    path: ./rules/geosite-category-proxy.yaml
+    cache-length: 50400
+    cache-ttl: 86400
+  geosite-category-telegram:
+    type: http
+    behavior: classical
+    url: "${RULESET_BASE_URL}/geosite-category-telegram.min.yaml"
+    path: ./rules/geosite-category-telegram.yaml
+    cache-length: 50400
+    cache-ttl: 86400
+  geosite-category-ir:
+    type: http
+    behavior: classical
+    url: "${RULESET_BASE_URL}/geosite-category-ir.min.yaml"
+    path: ./rules/geosite-category-ir.yaml
+    cache-length: 50400
+    cache-ttl: 86400
+  geosite-category-allowlist:
+    type: http
+    behavior: classical
+    url: "${RULESET_BASE_URL}/geosite-category-allowlist.min.yaml"
+    path: ./rules/geosite-category-allowlist.yaml
+    cache-length: 50400
+    cache-ttl: 86400
+  geosite-category-domestic:
+    type: http
+    behavior: classical
+    url: "${RULESET_BASE_URL}/geosite-category-domestic.min.yaml"
+    path: ./rules/geosite-category-domestic.yaml
+    cache-length: 50400
+    cache-ttl: 86400
+
+# Rules — order matters.  Specific first, catch-all last.
+# CN traffic is routed DIRECT via the built-in GeoSite/GeoIP rules (geodata is
+# auto-downloaded), so it does not depend on any remote rule-set fetch.
+rules:
+  - "RULE-SET,geosite-category-hijacking,REJECT,no-resolve"
+  - "RULE-SET,geosite-category-block,REJECT,no-resolve"
+  - "RULE-SET,geosite-category-telegram,Proxy"
+  - "RULE-SET,geosite-category-ir,REJECT,no-resolve"
+  - "RULE-SET,geosite-category-gfw,Proxy,no-resolve"
+  - "RULE-SET,geosite-category-allowlist,DIRECT,no-resolve"
+  - "RULE-SET,geosite-category-domestic,DIRECT,no-resolve"
+  - "GEOSITE,CN,DIRECT"
+  - "GEOIP,CN,DIRECT"
+  - "RULE-SET,geosite-category-proxy,Proxy,no-resolve"
+  - "MATCH,选择出口 Select"

@@ -1,0 +1,35 @@
+# mihomo-freebox crawler (Rust).
+#
+# A faithful, dependency-light port of the original Python crawler
+# (crawler/freebox).  It harvests free proxy nodes from public subscription
+# sources, parses vless/vmess/ss/trojan/socks5/http(s) URLs into Clash.Meta
+# `proxies`, optionally TCP-probes them for reachability, and writes a
+# `proxy-providers` YAML file that mihomo consumes via `proxy-providers`.
+#
+# Design notes (kept minimal by intent):
+#  * HTTP is done through the `curl` binary (already present in the image and on
+#    every CI runner).  This avoids pulling a TLS/HTTP crate — and its C/crypto
+#    toolchain — keeping the build `no_std`-linker-friendly and the deps purely
+#    Rust (no OpenSSL / ring / aws-lc-rs at compile or run time).
+#  * YAML output uses the pure-Rust `yaml-rust`.
+#  * base64 via the pure-Rust `base64` crate.
+[package]
+name = "freebox"
+version = "0.2.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "freebox"
+path = "src/main.rs"
+
+[dependencies]
+base64          = "0.22"
+linked-hash-map = "0.5"
+yaml-rust       = "0.4"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

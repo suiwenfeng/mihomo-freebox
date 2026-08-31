@@ -1,0 +1,93 @@
+# Publish the free mihomo configuration to GitHub Pages.
+#
+# On each run (daily cron + manual + dispatched from `update-nodes.yml` after a
+# node refresh):
+#   1. Build the Rust crawler (`freebox`).
+#   2. Crawl + TCP-probe free nodes -> providers/proxies.yaml.
+#   3. Render config.yaml.template -> config.yaml (with `mode: global`) using
+#      the project defaults (env overrides are applied by the container at
+#      runtime, not here).
+#   4. Deploy {config.yaml.template, config.yaml, providers/proxies.yaml} to the
+#      `gh-pages` branch via GitHub Pages.
+#
+# The container entrypoint pulls the *latest template* from this Pages site on
+# every (re)start (falling back to the baked-in template if Pages is unreachable)
+# and re-crawls fresh nodes itself, so the running mihomo always uses an
+# up-to-date config in global mode.
+name: Publish config
+
+on:
+  schedule:
+    # Runs ~45 min after the daily node refresh (01:15 UTC).
+    - cron: "45 1 * * *"
+  workflow_dispatch:
+  # Triggered when the daily `update-nodes` workflow finishes (it commits the
+  # refreshed providers/proxies.yaml), so Pages always carries fresh nodes.
+  # Using workflow_run (not a token API call) avoids the GITHUB_TOKEN-can't-
+  # trigger-workflows limitation.
+  workflow_run:
+    workflows: ["Update free nodes"]
+    types: [completed]
+
+permissions:
+  contents: read   # checkout only
+  pages: write     # deploy-pages
+  id-token: write  # deploy-pages (OIDC)
+
+concurrency:
+  group: publish-config
+  cancel-in-running: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Rust toolchain (ubuntu ships a C toolchain, so a normal gnu build works) ──
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+            sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustc --version
+          cargo --version
+
+      - name: Build crawler (release)
+        run: |
+          cd crawler
+          cargo build --release
+
+      # ── crawl + TCP probe ─────────────────────────────────────
+      - name: Crawl free nodes
+        run: ./crawler/target/release/freebox --timeout 3 --max 200 --out providers/proxies.yaml
+
+      # ── render the mihomo config (defaults; runtime env is applied in-container) ──
+      - name: Render config
+        run: python3 config/render_config.py \
+          --template config/config.yaml.template \
+          --out config.yaml
+
+      - name: Stage Pages assets
+        run: |
+          mkdir -p gh-pages/providers
+          cp config/config.yaml.template gh-pages/config.yaml.template
+          cp config.yaml gh-pages/config.yaml
+          cp providers/proxies.yaml gh-pages/providers/proxies.yaml
+          echo "--- gh-pages tree ---"
+          find gh-pages -type f
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          publish_branch: gh-pages
+          publish_dir: ./gh-pages
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./gh-pages
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4

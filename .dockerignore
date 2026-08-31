@@ -1,0 +1,12 @@
+# Rust build caches (rebuilt inside the image's own build stage).
+crawler/target/
+target/
+
+# local scratch / verification artifacts
+/tmp/
+
+# VCS metadata
+.git/
+
+# CI workflows are not needed in the runtime image.
+.github/
