@@ -10,7 +10,7 @@
 #
 # With `--restart=always` every container (re)start re-crawls the latest nodes,
 # so the proxy set is always fresh.  Set RUN_CRAWL_TEST=1 to also run the TCP
-# reachability probe (slower; recommended for the daily GitHub Action commit,
+# reachability probe (slower; recommended for the daily CI cron build,
 # not for every container start).
 # =============================================================================
 set -euo pipefail
@@ -33,7 +33,12 @@ CONFIG_FILE="${MIHOMO_HOME}/config.yaml"
 : "${CONTROLLER_PORT:=19090}"
 : "${ALLOW_LAN:=true}"
 : "${LOG_LEVEL:=info}"
-: "${SECRET:=freebox}"
+# Secret: honour MIHOMO_SECRET (README/Dockerfile documented), falling back to
+# the legacy SECRET alias, then a non-secret placeholder "freebox".  Everything
+# below keeps using ${SECRET} so the template token, render_config.py and
+# dashboard.py stay unified.
+: "${MIHOMO_SECRET:=${SECRET:-freebox}}"
+SECRET="${MIHOMO_SECRET}"
 : "${RULESET_BASE_URL:=https://cdn.metacubex.com/RuleSet}"
 
 : "${MAX_NODES:=150}"
@@ -51,9 +56,15 @@ chown -R 1000:1000 "${MIHOMO_HOME}" 2>/dev/null || true
 # Run the (statically-linked, baked) Rust crawler. Crawl to a temp file first so
 # an empty result (all sources down) does NOT clobber the last-known-good
 # provider; mihomo still boots with a stale-but-live node set.
+#
+# Proxy: set SOCKS5_PROXY so the crawler auto-detects the local mihomo proxy
+# (127.0.0.1:7890).  On first container start mihomo isn't listening yet so
+# the auto-detection fails gracefully and the crawler falls back to direct
+# access.  On quick restarts (previous mihomo still bound to 7890) the proxy is
+# used as a SOCKS5 upstream for GFW-blocked subscription sources.
 CRAWL_OUT="${PROVIDERS_FILE}.new"
 log "crawling free nodes (RUN_CRAWL_TEST=${RUN_CRAWL_TEST}) ..."
-CRAWL_ARGS=("${FREEBOX_BIN}" --out "${CRAWL_OUT}")
+CRAWL_ARGS=(env SOCKS5_PROXY="${MIXED_PORT:+127.0.0.1:${MIXED_PORT}}" "${FREEBOX_BIN}" --out "${CRAWL_OUT}" --sources-config "${APP_DIR}/config/sources.yaml")
 if [ "${RUN_CRAWL_TEST}" = "1" ]; then
   CRAWL_ARGS+=(--timeout "${PROBE_TIMEOUT}" --max "${MAX_NODES}")
 else
@@ -97,19 +108,23 @@ rm -f "${CRAWL_OUT}"
 log "node provider: ${PROVIDERS_FILE} (${NODES} proxies)"
 
 # ── 2. render config ──────────────────────────────────────────────────────
-# Pull the latest config template published to GitHub Pages (req: image always
-# pulls the latest config). Fall back to the template baked into the image so
-# the container still boots offline. Runtime env (secret/ports) is substituted
-# from the container environment during rendering.
-: "${CONFIG_URL:=https://wenfengsui.github.io/mihomo-freebox/config.yaml.template}"
+# Optionally pull a config template from a URL (set CONFIG_URL). With no URL
+# (the default) the template baked into the image is used, so the container
+# boots fully offline. Runtime env (secret/ports) is substituted from the
+# container environment during rendering.
+: "${CONFIG_URL:=}"    # empty => use the baked-in template (no GitHub Pages dep.)
 RUNTIME_TEMPLATE="${CONFIG_TEMPLATE}"
-if curl -fsSL --max-time 10 "${CONFIG_URL}" -o /tmp/freebox_config_template.yaml 2>/dev/null \
+if [ -n "${CONFIG_URL}" ] && curl -fsSL --max-time 10 "${CONFIG_URL}" -o /tmp/freebox_config_template.yaml 2>/dev/null \
    && [ -s /tmp/freebox_config_template.yaml ]; then
   RUNTIME_TEMPLATE=/tmp/freebox_config_template.yaml
   log "pulled latest config template from ${CONFIG_URL}"
 else
   rm -f /tmp/freebox_config_template.yaml
-  log "could not reach ${CONFIG_URL}; using baked-in template (${CONFIG_TEMPLATE})"
+  if [ -z "${CONFIG_URL}" ]; then
+    log "CONFIG_URL not set; using baked-in template (${CONFIG_TEMPLATE})"
+  else
+    log "could not reach ${CONFIG_URL}; using baked-in template (${CONFIG_TEMPLATE})"
+  fi
 fi
 
 log "rendering config.yaml ..."

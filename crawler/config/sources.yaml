@@ -1,0 +1,135 @@
+# =============================================================================
+# Declarative subscription source definitions for the `freebox` crawler.
+#
+# The crawler loads this file at startup (relative to the CWD or the path set
+# by `--sources-config`).  If the file is missing or fails to parse, the
+# hardcoded defaults in `source::default_sources()` are used instead.
+#
+# Each source entry:
+#   name        – short identifier used in log messages
+#   url         – the URL to fetch
+#   timeout     – per-request curl timeout in seconds (default: 25)
+#   via_proxy   – always fetch through the local mihomo SOCKS5 proxy
+#                 (default: false).  When false, the SubFetcher still falls
+#                 back to the proxy if a direct fetch fails.
+#   kind        – "direct" (fetch → decode) or "indirect" (page-listing chain)
+#
+# For `kind: indirect` sources, a `discovery` list defines the navigation
+# chain.  Each step extracts all URLs from the current page, keeps the first
+# that matches `predicate`, fetches it, and repeats.  The final page's content
+# is decoded as the subscription body.
+#
+# Predicate types (composable with `all` / `any`):
+#   contains    – URL contains this substring
+#   ends_with   – URL ends with this suffix
+#   starts_with – URL starts with this prefix
+#   all         – every inner predicate must match
+#   any         – at least one inner predicate must match
+# =============================================================================
+
+# Optional: override the proxy endpoint.  When omitted (or null) the crawler
+# auto-detects a local mihomo SOCKS5 proxy on 127.0.0.1:7890 (or whatever
+# PROXY_URL / SOCKS5_PROXY env vars point to).
+# proxy: "127.0.0.1:7890"
+
+sources:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Direct base64 / URL-per-line subscriptions
+  # ───────────────────────────────────────────────────────────────────────────
+
+  # zhuhaiuk/free-nodes — the most reliable direct source.
+  # CDN variant (jsdelivr) and raw GitHub variant, both verified reachable.
+  - name: "zhuhai-cdn"
+    url: "https://cdn.jsdelivr.net/gh/zhuhaiuk/free-nodes@main/nodes.txt"
+    timeout: 25
+    via_proxy: false
+
+  - name: "zhuhai-raw"
+    url: "https://raw.githubusercontent.com/zhuhaiuk/free-nodes/main/nodes.txt"
+    timeout: 25
+    via_proxy: false
+
+  # zhuhaiuk/free-nodes extra nodes (base64-encoded, distinct node set).
+  - name: "zhuhai-extra-cdn"
+    url: "https://cdn.jsdelivr.net/gh/zhuhaiuk/free-nodes@main/extra_nodes.txt"
+    timeout: 25
+    via_proxy: false
+
+  - name: "zhuhai-extra-raw"
+    url: "https://raw.githubusercontent.com/zhuhaiuk/free-nodes/main/extra_nodes.txt"
+    timeout: 25
+    via_proxy: false
+
+  # shuaidaoya FreeNodes — Gist base64 (percent-encoded), verified reachable.
+  - name: "shuaidaoya-base64"
+    url: "https://gist.githubusercontent.com/shuaidaoya/9e5cf2749c0ce79932dd9229d9b4162b/raw/base64.txt"
+    timeout: 25
+    via_proxy: false
+
+  # Pawdroid Free-servers — base64 subscription blob, verified reachable.
+  - name: "pawdroid-sub"
+    url: "https://raw.githubusercontent.com/Pawdroid/Free-servers/master/sub"
+    timeout: 25
+    via_proxy: false
+
+  # ermaozi get_subscribe — plain URL-per-line, verified reachable.
+  - name: "ermaozi-v2ray"
+    url: "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt"
+    timeout: 25
+    via_proxy: false
+
+  # learnhard-cn free_proxy_ss — base64-encoded lines, verified reachable.
+  - name: "learnhard-ss"
+    url: "https://raw.githubusercontent.com/learnhard-cn/free_proxy_ss/main/free"
+    timeout: 25
+    via_proxy: false
+
+  # aiboboxx/v2rayfree — date-stamped base64 subscription.
+  # The {date} placeholder is replaced with today's date (YYYYMMDD); if the
+  # current date's file is unavailable, the crawler automatically retries
+  # the previous 3 days.
+  - name: "aiboboxx-v2rayfree"
+    url: "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/v{date}"
+    timeout: 15
+    via_proxy: false
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Indirect (page-listing) sources
+  # ───────────────────────────────────────────────────────────────────────────
+
+  # nodefree.me — blog index → article → subscription.
+  # This is the canonical indirect source; the article links on the index page
+  # match the "all" predicate below, and the subscription links on the article
+  # page point to the node.nodefree.me subdomain.
+  - name: "nodefree"
+    url: "https://nodefree.me/"
+    timeout: 25
+    via_proxy: false
+    kind: indirect
+    discovery:
+      - label: "article link"
+        predicate:
+          all:
+            - contains: "nodefree.me/p/"
+            - ends_with: ".html"
+      - label: "subscription URL"
+        predicate:
+          contains: "node.nodefree.me"
+
+  # Example: adding a new indirect source requires only a new entry here.
+  # No Rust code changes needed — the generic Step/Predicate engine handles it.
+  #
+  # - name: "my-blog-sub"
+  #   url: "https://example-blog.com/"
+  #   timeout: 25
+  #   via_proxy: true          # this blog is GFW-blocked → route through proxy
+  #   kind: indirect
+  #   discovery:
+  #     - label: "article"
+  #       predicate:
+  #         all:
+  #           - contains: "example-blog.com"
+  #           - ends_with: ".html"
+  #     - label: "subscription"
+  #       predicate:
+  #         contains: "sub.example-blog.com"

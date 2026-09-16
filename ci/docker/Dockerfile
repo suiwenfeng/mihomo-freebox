@@ -98,6 +98,7 @@ COPY --from=ui /ui /etc/mihomo/ui
 COPY providers/proxies.yaml /etc/mihomo/providers/proxies.yaml
 # Static Rust crawler binary + config template/renderer + dashboard gateway + entrypoint.
 COPY --from=crawler /freebox /usr/local/bin/freebox
+COPY --from=crawler /src/config/sources.yaml ${APP_DIR}/config/sources.yaml
 COPY config ${APP_DIR}/config
 COPY ci/docker/dashboard.py ${APP_DIR}/dashboard.py
 COPY ci/docker/entrypoint.sh /entrypoint.sh

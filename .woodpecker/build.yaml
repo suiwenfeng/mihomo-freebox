@@ -1,0 +1,84 @@
+# ===========================================================================
+# Codeberg Woodpecker CI pipeline for mihomo-freebox.
+#
+# Builds the multi-arch (linux/amd64 + linux/arm64) image and publishes it to
+# Docker Hub.  This replaces the removed `.github/workflows/build-image.yml`;
+# node crawling + config rendering happen in the image's own entrypoint on
+# every (re)start, so `publish-config.yml` / `update-nodes.yml` are gone too.
+#
+# ── Required Woodpecker secrets (UI: Project settings → Secrets) ──────────
+#   dockerhub_username   Docker Hub account name
+#   dockerhub_token      Docker Hub access token (classic "write:packages")
+#
+# ── Optional project environment variable (UI: Project settings → Env) ────
+#   MIHOMO_VERSION       Pin a mihomo release, e.g. v1.19.30.  When unset the
+#                        pipeline resolves the latest mihomo release tag from
+#                        the MetaCubeX GitHub releases API.
+#
+# ── Runner requirement ─────────────────────────────────────────────────────
+#   The build step mounts the Docker socket (`/var/run/docker.sock`) and runs
+#   Buildx with the `docker-container` driver + qemu, so the project must be
+#   marked **Trusted** (Project settings → Trusted) for the `volumes:` block.
+#
+# ── Daily builds ────────────────────────────────────────────────────────────
+#   The cron schedule itself is configured in the Woodpecker UI (Project
+#   settings → Cron), e.g. `0 1 * * *` for a 01:00 daily run.  The `cron` and
+#   `manual` triggers below simply allow the pipeline to run on those events.
+# ===========================================================================
+when:
+  # Rebuild on every commit that touches image-relevant files.
+  - event: push
+    branch: main
+    path:
+      include:
+        - "ci/docker/**"
+        - "ci/scripts/**"
+        - ".woodpecker/**"
+        - "config/**"
+        - "crawler/**"
+        - "providers/proxies.yaml"
+  # Keep the published image fresh even when nothing changed.
+  - event: cron
+  - event: manual
+
+steps:
+  # ── 1. Resolve the mihomo release to bake into the image + tags. ──────────
+  # Honours a project-level MIHOMO_VERSION override; otherwise queries the
+  # MetaCubeX GitHub releases API for the latest tag (e.g. v1.19.30).
+  - name: Resolve mihomo version
+    image: alpine:3.20
+    pull: true
+    commands:
+      - apk add --no-cache curl
+      - |
+        set -e
+        VER=$MIHOMO_VERSION
+        if [ -z "$VER" ]; then
+          echo "==> MIHOMO_VERSION not set; resolving latest mihomo release ..."
+          RELEASES=$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)
+          VER=$(printf '%s' "$RELEASES" | grep '"tag_name"' | sed 's/.*"tag_name":[[:space:]]*"//; s/".*//')
+        fi
+        if [ -z "$VER" ] || [ "$VER" = "null" ]; then
+          echo "FATAL: could not resolve mihomo version" >&2
+          exit 1
+        fi
+        printf '%s\n' "$VER" > .mihomo-version
+        echo "==> mihomo version: $VER"
+
+  # ── 2. Buildx cross-arch build + push to Docker Hub. ─────────────────────
+  # Uses the Docker socket (step `volumes`) and Buildx's docker-container
+  # driver.  qemu-user-static lets the arm64 RUN steps execute on the amd64
+  # host.  Image tags: latest, v<rel>, <rel>, <major.minor>, sha-<commit>.
+  - name: Build & push to Docker Hub
+    image: docker:cli
+    pull: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      DOCKERHUB_USERNAME:
+        from_secret: dockerhub_username
+      DOCKERHUB_TOKEN:
+        from_secret: dockerhub_token
+      IMAGE_NAME: suiwenfeng/mihomo-freebox
+    commands:
+      - sh ./ci/scripts/build-image.sh

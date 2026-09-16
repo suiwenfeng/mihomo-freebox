@@ -10,3 +10,10 @@ target/
 
 # CI workflows are not needed in the runtime image.
 .github/
+# Woodpecker CI pipeline + helper scripts (not used inside the image).
+.woodpecker/
+ci/scripts/
+# Runtime build artifact produced by the "Resolve mihomo version" CI step.
+.mihomo-version
+# Leftover stub directory.
+.ci/
