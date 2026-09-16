@@ -541,7 +541,8 @@ def parse_args(argv=None):
     ap.add_argument("--listen", default=os.environ.get("DASHBOARD_LISTEN", "0.0.0.0:9090"))
     ap.add_argument("--ui", default=os.environ.get("EXTERNAL_UI", "/etc/mihomo/ui"))
     ap.add_argument("--api", default=os.environ.get("MIHOMO_API", "http://127.0.0.1:19090"))
-    ap.add_argument("--secret", default=os.environ.get("MIHOMO_SECRET", "freebox"))
+    ap.add_argument("--secret",
+                    default=os.environ.get("MIHOMO_SECRET") or os.environ.get("SECRET") or "freebox")
     ap.add_argument("--backend-url", default=os.environ.get("DASHBOARD_BACKEND_URL", "/clash-api"))
     ap.add_argument("--github-token", default=os.environ.get("GITHUB_TOKEN", ""))
     return ap.parse_args(argv)

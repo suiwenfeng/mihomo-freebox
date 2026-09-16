@@ -291,13 +291,23 @@ fn stream_opts(q: Q, proxy: &mut Proxy) {
             proxy.insert(s("ws-opts"), Yaml::Hash(opts));
         }
         "http" => {
+            // NOTE (mihomo v1.19.x): `http-opts.headers` must be a *map of
+            // header-name -> sequence of values* (`map[string][]string`). Both
+            // wrong shapes make mihomo reject the node — and a single rejected
+            // node drops the *entire* free-nodes provider, collapsing every
+            // selector group to just `COMPATIBLE`:
+            //   * map of scalars ("Host: <value>")  -> 'http-opts.headers[Host]' is not a slice
+            //   * headers as a flat sequence         -> 'http-opts.headers' expected a map, got 'slice'
+            // So emit:  headers: { Host: [<host>] }.
+            // By contrast `ws-opts.headers` IS a map of scalars, which is why
+            // the `ws` branch keeps the plain hash form.
             proxy.insert(s("http"), b(true));
-            let mut headers: Proxy = LinkedHashMap::new();
-            if let Some(host) = q.get("host").or_else(|| q.get("sni")) {
-                headers.insert(s("Host"), s(host));
-            }
             let mut opts: Proxy = LinkedHashMap::new();
-            opts.insert(s("headers"), Yaml::Hash(headers));
+            if let Some(host) = q.get("host").or_else(|| q.get("sni")) {
+                let mut headers: Proxy = LinkedHashMap::new();
+                headers.insert(s("Host"), seq(vec![host.to_string()]));
+                opts.insert(s("headers"), Yaml::Hash(headers));
+            }
             let path = q.get("path").unwrap_or("/");
             if !path.is_empty() {
                 opts.insert(s("path"), seq(path.split(',').map(|x| x.to_string()).collect()));
@@ -606,16 +616,17 @@ fn parse_vmess(url: &UrlSplit) -> Option<Proxy> {
             proxy.insert(s("ws-opts"), Yaml::Hash(opts));
         }
         "http" => {
+            // See the NOTE in `stream_opts`: mihomo v1.19.x wants `http-opts.headers`
+            // as a map Name -> [values], i.e. `headers: { Host: [<host>] }` — NOT a
+            // sequence of "Key: Value" strings and NOT a map of scalars. A wrong
+            // shape here makes mihomo reject the node and drop the whole provider.
             proxy.insert(s("http"), b(true));
             let mut opts: Proxy = LinkedHashMap::new();
-            opts.insert(
-                s("headers"),
-                Yaml::Hash({
-                    let mut h: Proxy = LinkedHashMap::new();
-                    h.insert(s("Host"), s(&host));
-                    h
-                }),
-            );
+            if !host.is_empty() {
+                let mut headers: Proxy = LinkedHashMap::new();
+                headers.insert(s("Host"), seq(vec![host.to_string()]));
+                opts.insert(s("headers"), Yaml::Hash(headers));
+            }
             opts.insert(
                 s("path"),
                 seq(vec![if path_v.is_empty() { "/".to_string() } else { path_v }]),
@@ -799,5 +810,63 @@ mod tests {
         // all distinct servers survived (none dropped by name collision)
         let servers: Vec<&str> = proxies.iter().filter_map(|p| get(p, "server")).collect();
         assert_eq!(servers, vec!["1.1.1.1", "2.2.2.2", "3.3.3.3"]);
+    }
+
+    /// Helper: pull `http-opts.headers` out of a node and assert it is the form
+    /// mihomo v1.19.x requires: a *mapping* of header-name -> *sequence* of
+    /// values (i.e. `headers: { Host: [<host>] }`). Emitting it as a flat
+    /// sequence of "Key: Value" strings, or as a map of scalars, makes mihomo
+    /// reject the node (`'http-opts.headers' expected a map, got 'slice'` /
+    /// `'http-opts.headers[Host]' is not a slice`), which drops the whole
+    /// free-nodes provider and collapses every selector to `COMPATIBLE`.
+    fn assert_http_headers_is_map_of_lists(node: &Proxy, expect_host: &str) {
+        let ho = node
+            .get(&Yaml::String("http-opts".to_string()))
+            .and_then(|v| v.as_hash())
+            .expect("http-opts present and a mapping");
+        let headers = ho
+            .get(&Yaml::String("headers".to_string()))
+            .expect("http-opts.headers present");
+        // `headers` itself must be a MAP (Name -> [values]), not a slice.
+        let h = headers.as_hash().unwrap_or_else(|| {
+            panic!("http-opts.headers must be a MAP (Name -> [values]), got a slice")
+        });
+        // each header value must be a SEQUENCE (list).
+        let host_list = h
+            .get(&Yaml::String("Host".to_string()))
+            .unwrap_or_else(|| panic!("http-opts.headers.Host present"));
+        let vals = host_list.as_vec().unwrap_or_else(|| {
+            panic!("http-opts.headers.Host must be a SEQUENCE, got a scalar")
+        });
+        assert_eq!(
+            vals.iter().map(|v| v.as_str().expect("str")).collect::<Vec<_>>(),
+            vec![expect_host],
+            "http-opts.headers.Host == [<host>], got {:?}",
+            vals
+        );
+    }
+
+    #[test]
+    fn http_opts_headers_is_map_of_lists_for_vmess() {
+        // vmess net=http — the exact shape that produced the original
+        // "proxy 31 error: 'http-opts.headers[Host]' is not a slice" failure
+        // (map of scalars) and, after the wrong slice-of-strings fix, the
+        // "'http-opts.headers' expected a map, got 'slice'" failure.
+        let json = r#"{"add":"47.86.167.194","port":"800","id":"f2c67cae-c09d-4739-947d-f5302d87a3c0","net":"http","host":"sjskendn.dingtalk.com","path":"/x","tls":"1"}"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(json);
+        let url = format!("vmess://{b64}#vmess_http");
+        let node = parse_node(&url).expect("vmess http node parses");
+        assert_eq!(get(&node, "type"), Some("vmess"));
+        assert_http_headers_is_map_of_lists(&node, "sjskendn.dingtalk.com");
+    }
+
+    #[test]
+    fn http_opts_headers_is_map_of_lists_for_vless() {
+        // vless?type=http -> tls_stream_opts -> stream_opts (shared http branch).
+        let url = "vless://f2c67cae-c09d-4739-947d-f5302d87a3c0@47.86.167.194:800?\
+                   type=http&host=sjskendn.dingtalk.com&path=%2Fx&tls=1#vless_http";
+        let node = parse_node(url).expect("vless http node parses");
+        assert_eq!(get(&node, "type"), Some("vless"));
+        assert_http_headers_is_map_of_lists(&node, "sjskendn.dingtalk.com");
     }
 }

@@ -18,16 +18,44 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use yaml_rust::{Yaml, YamlEmitter};
 
 use parse::{get, get_i64, parse_urls, Proxy};
-use source::{harvest, load_sources, parse_extra_subs};
+use source::{auto_detect_proxy, harvest, load_sources, load_sources_from_config, parse_extra_subs, SubFetcher};
 
 const DEFAULT_OUT: &str = "providers/proxies.yaml";
 
 fn main() -> ExitCode {
     let args = parse_args();
     let extra = parse_extra_subs(&env::var("EXTRA_SUBS").unwrap_or_default());
-    let sources = load_sources(&extra);
 
-    let raw = harvest(&sources);
+    // Load sources: prefer the declarative config file, fall back to the
+    // hardcoded defaults.  Extra (EXTRA_SUBS) URLs are always appended.
+    let mut sources = match load_sources_from_config(&args.sources_config) {
+        Some(s) => {
+            eprintln!("[crawler] loaded {} sources from config", s.len());
+            s
+        }
+        None => {
+            eprintln!("[crawler] no sources config found; using defaults");
+            load_sources(&[])
+        }
+    };
+    // Append EXTRA_SUBS URLs (these are always Direct + non-proxy).
+    for (i, sub) in extra.iter().enumerate() {
+        sources.push(source::Source {
+            name: format!("extra-{i}"),
+            url: sub.clone(),
+            timeout: 25,
+            kind: source::SourceKind::Direct,
+            via_proxy: false,
+        });
+    }
+
+    // Auto-detect the local mihomo SOCKS5 proxy (freebox provides one on
+    // 127.0.0.1:7890).  The SubFetcher tries direct first and falls back to
+    // the proxy for sources that cannot be reached directly (GFW-blocked).
+    let proxy = auto_detect_proxy();
+    let fetcher = SubFetcher::new(proxy);
+
+    let raw = harvest(&sources, &fetcher);
     eprintln!("[crawler] {} raw URLs total", raw.len());
     if raw.is_empty() {
         eprintln!("[crawler] WARNING: no sources returned any raw URLs");
@@ -106,6 +134,7 @@ struct Args {
     max: usize,
     timeout: f64,
     no_test: bool,
+    sources_config: String,
 }
 
 fn parse_args() -> Args {
@@ -120,6 +149,8 @@ fn parse_args() -> Args {
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(3.5);
     let mut no_test = env::var("SKIP_TEST").as_deref().unwrap_or("") == "1";
+
+    let mut sources_config = String::new();
 
     let mut i = 0;
     while i < argv.len() {
@@ -139,6 +170,9 @@ fn parse_args() -> Args {
                 timeout = take_value(attached, &argv, &mut i)
                     .parse::<f64>()
                     .unwrap_or(3.5)
+            }
+            "--sources-config" => {
+                sources_config = take_value(attached, &argv, &mut i)
             }
             "--no-test" => {
                 // bare flag, or --no-test=true/false
@@ -160,7 +194,7 @@ fn parse_args() -> Args {
         i += 1;
     }
 
-    Args { out, max, timeout, no_test }
+    Args { out, max, timeout, no_test, sources_config }
 }
 
 /// Value for `--key=value` (attached) or the next argv element (space form).
@@ -174,10 +208,10 @@ fn take_value(attached: Option<String>, argv: &[String], i: &mut usize) -> Strin
 }
 
 fn print_usage() {
-    eprintln!("usage: freebox [--out PATH] [--max N] [--timeout SECS] [--no-test]");
+    eprintln!("usage: freebox [--out PATH] [--max N] [--timeout SECS] [--sources-config PATH] [--no-test]");
     eprintln!();
     eprintln!("Env: EXTRA_SUBS, MAX_NODES (default 0), PROBE_TIMEOUT (default 3.5),");
-    eprintln!("     SKIP_TEST=1, OUT_FILE.");
+    eprintln!("     SKIP_TEST=1, OUT_FILE, PROXY_URL / SOCKS5_PROXY / SKIP_PROXY.");
 }
 
 // ---------------------------------------------------------------------------

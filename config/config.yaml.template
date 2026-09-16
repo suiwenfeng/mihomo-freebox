@@ -72,6 +72,20 @@ dns:
     - time.apple.com
     - ntp.org
     - "*.ntp.org"
+    # Rule-set / GeoData / UI CDN hosts must resolve via the DIRECT
+    # `default-nameserver` (223.5.5.5 / 119.29.29.29), NOT via the encrypted
+    # `nameserver` DoH upstreams (1.1.1.1 / dns.alidns.com / doh.pub). In
+    # `mode: global` mihomo routes those DoH queries through the (often dead)
+    # free-proxy pool, so `cdn.metacubex.com` / `cdn.jsdelivr.net` end up as
+    # "dns resolve failed" and every rule-set provider fails to load with EOF.
+    # Listing them here forces a direct A/AAAA lookup, so the provider fetches
+    # and the geox-url downloads succeed independently of the proxy pool.
+    - "cdn.metacubex.com"
+    - "*.metacubex.com"
+    - "cdn.jsdelivr.net"
+    - "fastly.jsdelivr.net"
+    - "raw.githubusercontent.com"
+    - "*.github.io"
 
 # Geo data auto-downloads from the MetaCubeX/meta-rules-dat release via a
 # jsDelivr CDN mirror (reachable behind the GFW).  The Dockerfile also

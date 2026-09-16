@@ -18,10 +18,13 @@ local proxy on **port 7890**, backed by **freshly-crawled free nodes** and the
 
 ---
 
-## Quick start (podman)
+## Quick start
 
 ```bash
-# 1. build (from the repo root)
+# 1a. option A: pull the pre-built multi-arch image from Docker Hub
+docker pull suiwenfeng/mihomo-freebox:latest
+
+# 1b. (or) option B: build it yourself (from the repo root)
 podman build -f ci/docker/Dockerfile -t freebox .
 
 # 2. run — every start re-crawls the latest nodes
@@ -29,7 +32,7 @@ podman run -d --restart=always \
   --name freebox \
   -p 7890:7890 -p 9090:9090 \
   -e MIHOMO_SECRET="$(openssl rand -hex 16)" \
-  freebox
+  freebox   # use suiwenfeng/mihomo-freebox:latest if you pulled instead of built
 
 # 3. open http://127.0.0.1:9090 → MetaCubeXD dashboard, already connected.
 # 4. set your browser/system proxy to 127.0.0.1:7890 (HTTP & SOCKS5).
@@ -59,17 +62,22 @@ container (single process tree)
 ```
 
 ### Data flow
-1. **crawl** — the `crawler/` crate (Rust, statically linked) fetches the
-   `zhuhaiuk/free-nodes` `nodes.txt` (the live, reliable source), follows the
-   latest article on `https://nodefree.me/` to its v2ray subscription link, and
-   any `EXTRA_SUBS` subscriptions; it parses `vless`/`vmess`/`ss`/`trojan`/`http(s)`
-   into Clash.Meta `proxies`. A TCP-reachability probe is run in the daily GH
-   Action commit; by default the container crawls *fast* (`--no-test`) and lets
-   mihomo's runtime `health-check` filter dead nodes. A non-empty result always
-   wins; an empty crawl keeps the last-known provider (or the baked-in snapshot).
-2. **template** — on every start the entrypoint tries to pull the *latest*
-   `config.yaml.template` from GitHub Pages (`CONFIG_URL`), falling back to the
-   template baked into the image if Pages is unreachable.
+1. **crawl** — the `crawler/` crate (Rust, statically linked) fetches from
+   multiple subscription sources defined in `crawler/config/sources.yaml`
+   (zhuhaiuk/free-nodes, shuaidaoya Gist, Pawdroid, ermaozi, learnhard,
+   nodefree.me indirect, and any `EXTRA_SUBS`). When direct access to a source
+   fails, the crawler auto-detects the local mihomo SOCKS5 proxy
+   (`127.0.0.1:7890`) and retries through it — so GFW-blocked sources are still
+   reachable when the proxy is available. It parses `vless`/`vmess`/`ss`/
+   `trojan`/`http(s)` into Clash.Meta `proxies`. A TCP-reachability probe is run
+   in the daily CI run; by default the container crawls *fast*
+   (`--no-test`) and lets mihomo's runtime `health-check` filter dead nodes. A
+   non-empty result always wins; an empty crawl keeps the last-known provider
+   (or the baked-in snapshot).
+2. **template** — on every start the entrypoint may pull a `config.yaml.template`
+   from a URL (`CONFIG_URL`, empty by default); when unset it uses the template
+   baked into the image, so the container boots fully offline. Runtime env
+   (secret/ports) is substituted during rendering.
 3. **render** — `config/render_config.py` substitutes `${VAR}` tokens from the
    environment into the template (`mode: global`, `mixed-port: 7890`).
 4. **validate** — `mihomo -t`; abort if invalid.
@@ -84,6 +92,69 @@ plain list/string. The tiny stdlib `dashboard.py` serves the **official**
 MetaCubeXD assets on `:9090` and reverse-proxies the Clash API on the same origin
 under `/clash-api` — so the dashboard auto-connects with no CORS and no secret
 prompt, with no `caddy`/`nginx` added to the image.
+
+---
+
+## Crawler subscription sources & proxy
+
+The `crawler/` crate (Rust, statically linked) harvests free proxy nodes from
+multiple subscription sources. Sources are defined declaratively in
+`crawler/config/sources.yaml`; new sources can be added **without touching the
+fetch logic** — just add an entry and the generic discovery engine handles it.
+
+### Source kinds
+
+| Kind | How it works |
+|---|---|
+| `direct` | Fetch the URL, decode the body (base64 blob or plain URL-per-line), extract proxy URLs. |
+| `indirect` | A page-listing source (e.g. a blog). Fetch the listing page, follow a chain of discovery steps (each finding the first URL matching a predicate), and decode the final page's content. |
+
+### Proxy support (翻墙)
+
+Many subscription sources are GFW-blocked (DNS fails or connections time out
+from direct access). The crawler auto-detects a local mihomo SOCKS5 proxy
+(`127.0.0.1:7890` — the container's own `mixed-port`) and routes blocked sources
+through it via curl's `--socks5-hostname` flag (DNS resolved by the proxy to
+avoid DNS poisoning).
+
+- **`via_proxy: false`** (default): the crawler tries direct access first, then
+  falls back to the proxy if a direct fetch fails and a proxy is available.
+- **`via_proxy: true`**: always use the proxy (skip the direct attempt).
+
+Proxy auto-detection order:
+1. `PROXY_URL` env var (e.g. `socks5://127.0.0.1:7890`)
+2. `SOCKS5_PROXY` env var (`host:port`)
+3. Well-known local mihomo port `127.0.0.1:7890`
+
+Set `SKIP_PROXY=1` to disable proxy auto-detection entirely (useful in CI where
+no local mihomo runs).
+
+### Declarative source config (`crawler/config/sources.yaml`)
+
+```yaml
+sources:
+  - name: "my-direct-source"
+    url: "https://example.com/sub.txt"
+    timeout: 25          # optional, default 25
+    via_proxy: false      # optional, default false
+
+  - name: "my-blog"
+    url: "https://example-blog.com/"
+    kind: indirect
+    via_proxy: true
+    discovery:
+      - label: "article"
+        predicate:
+          all:
+            - contains: "example-blog.com/p/"
+            - ends_with: ".html"
+      - label: "subscription"
+        predicate:
+          contains: "sub.example-blog.com"
+```
+
+Predicate types: `contains`, `ends_with`, `starts_with`, `all` (AND), `any` (OR).
+
 
 ---
 
@@ -102,8 +173,11 @@ prompt, with no `caddy`/`nginx` added to the image.
 | `RUN_CRAWL_TEST` | `0` | `1` → run the TCP probe before writing nodes (slower) |
 | `PROBE_TIMEOUT` | `2` | Per-node TCP probe timeout (seconds) |
 | `EXTRA_SUBS` | `""` | Extra subscription URLs (newline/comma separated) |
-| `CONFIG_URL` | `https://<user>.github.io/<repo>/config.yaml.template` | Latest config template pulled on start (fall-back: baked-in) |
-| `MIHOMO_VERSION` | `v1.19.30` | mihomo release (build arg) |
+| `PROXY_URL` | auto-detect | Preferred proxy override (`socks5://host:port` or `host:port`) |
+| `SOCKS5_PROXY` | auto-detect | Fallback proxy env var (same format) |
+| `SKIP_PROXY` | `0` | `1` → disable proxy auto-detection entirely |
+| `CONFIG_URL` | *(empty)* | Config template URL pulled on start; empty = baked-in template |
+| `MIHOMO_VERSION` | `v1.19.30` | mihomo release (build arg; also a CI project env var override) |
 
 ---
 
@@ -114,49 +188,89 @@ prompt, with no `caddy`/`nginx` added to the image.
 
 ---
 
-## GitHub Actions
+## CI: Codeberg Woodpecker
 
-| Workflow | Trigger | What it does |
-|---|---|---|
-| `update-nodes.yml` | cron nightly (`01:15 UTC`) + manual + `workflow_dispatch` | builds the Rust crawler, crawls **with** the TCP probe, commits `providers/proxies.yaml` if changed |
-| `publish-config.yml` | cron nightly (`01:45 UTC`) + manual + `workflow_run` (after the above) | crawls + probes, renders `config.yaml` (`mode: global`), deploys the template + config + nodes to **GitHub Pages** |
-| `build-image.yml` | `providers/proxies.yaml` / `ci/docker` / `config` / `crawler` change + manual | builds multi-arch (`linux/amd64` + `linux/arm64`) image (bakes the Rust crawler + mihomo) and pushes to `ghcr.io/<repo>:latest` |
+CI lives in [`.woodpecker/build.yaml`](.woodpecker/build.yaml) on **Codeberg
+Woodpecker CI** (the old GitHub Actions workflows are gone). It builds the
+multi-arch (`linux/amd64` + `linux/arm64`) image — baking in the Rust crawler
+and the mihomo kernel — and pushes it to **Docker Hub**.
 
-> The workflows are **disabled by default on forks**. Enable them (Settings →
-> Actions → General → *Workflow permissions*: **Read & write**) and they will
-> keep both nodes and the image fresh automatically.
+| Trigger | What happens |
+|---|---|
+| **push** to `main` touching `ci/docker/**`, `ci/scripts/**`, `config/**`, `crawler/**`, `.woodpecker/**` or `providers/proxies.yaml` | rebuild + republish |
+| **cron** (schedule configured in the Woodpecker UI → Project → Cron, e.g. daily) | always rebuild with the **latest mihomo release** (unless `MIHOMO_VERSION` is pinned) + republish |
+| **manual** (Run workflow button) | same as cron |
 
----
+**mihomo version.** Each run resolves the latest
+[MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) release tag from the
+GitHub API and builds with it. To pin a specific release, set the project-level
+environment variable `MIHOMO_VERSION` (e.g. `v1.19.30`) in the Woodpecker
+project settings — when unset, "latest" is resolved automatically.
 
-## GitHub Pages (latest config)
+**Image tags** pushed to Docker Hub (`suiwenfeng/mihomo-freebox`):
 
-`publish-config.yml` (cron `01:45 UTC`, also re-runs after every node refresh,
-plus manual `workflow_dispatch`) publishes to the `gh-pages` branch
-([GitHub Pages](https://docs.github.com/en/actions/deployment/about-deploying-via-github-pages)):
+| Tag | Meaning |
+|---|---|
+| `latest` | newest build |
+| `v1.19.30` | the baked mihomo release |
+| `1.19.30` | release without the `v` prefix |
+| `1.19` | major.minor rolling tag |
+| `sha-<commit>` | short commit SHA |
 
-- `config.yaml.template` — the mihomo config template (always rendered with
-  `mode: global`)
-- `config.yaml` — a rendered preview (default env)
-- `providers/proxies.yaml` — the latest probed free nodes
+### Required Woodpecker setup
 
-On every container `(re)start` the entrypoint pulls the **latest template** from
-`https://<org>.github.io/<repo>/config.yaml.template` (override with `CONFIG_URL`),
-falling back to the baked-in template if Pages is unreachable. The container then
-always re-crawls fresh nodes itself (see Data flow #1), so the running mihomo is
-kept in lock-step with the repo even between image rebuilds.
+1. **Secrets** (Project → Secrets): `dockerhub_username` and `dockerhub_token`
+   (a Docker Hub access token with `write:packages`).
+2. **Trusted** (Project → Settings → *Trusted*): enable it — the build step
+   mounts the Docker socket and uses Buildx with BuildKit's `docker-container`
+   driver (+ qemu for `arm64`).
+3. **Cron** (Project → Cron, optional): add a schedule such as `0 1 * * *` to
+   keep the image refreshed daily with the newest mihomo release.
+
+### Pulling from Docker Hub
+
+```bash
+# pre-built multi-arch image
+docker pull suiwenfeng/mihomo-freebox:latest
+# or pin to a specific mihomo release
+docker pull suiwenfeng/mihomo-freebox:v1.19.30
+```
+
+### What happened to GitHub Pages / node publishing?
+
+`publish-config.yml` and `update-nodes.yml` were removed — their jobs (crawling
+fresh free nodes, rendering/validating the config) now run **inside the image's
+entrypoint on every `(re)start`**, so there is no longer a separate node-publish
+job or a GitHub Pages site hosting a config template. `CONFIG_URL` now defaults
+to empty and the baked-in `config.yaml.template` is used unless you override
+`CONFIG_URL` at runtime. The container always re-crawls fresh nodes itself (see
+Data flow #1), keeping mihomo in lock-step with the repo even between image
+rebuilds.
 
 ---
 
 ## Notes / caveats
 
-- **node sources** — the default crawler sources are the `zhuhaiuk/free-nodes`
-  `nodes.txt` CDN mirror + raw fallback (reliable from this environment) and
-  `https://nodefree.me/`.  `nodefree.me` is an **indirect page-listing source**:
-  the crawler fetches the index page, follows the first article link, then takes
-  the first subscription address link on that article page (the v2ray `.txt`
-  subscription) and decodes it.  `nodefree.me` is fetched last so the reliable
-  `zhuhaiuk` source wins on de-duplication.  Any additional subscription can
-  still be plugged in via `EXTRA_SUBS`.
+- **node sources** — the crawler harvests from multiple free-node subscription
+  sources (listed in `crawler/config/sources.yaml`):
+  • `zhuhaiuk/free-nodes` `nodes.txt` (CDN + raw mirror, base64)
+  • `zhuhaiuk/free-nodes` `extra_nodes.txt` (CDN + raw mirror, base64, distinct nodes)
+  • `shuaidaoya` FreeNodes Gist (base64, percent-encoded)
+  • `Pawdroid/Free-servers` `sub` (base64 blob)
+  • `ermaozi/get_subscribe` `v2ray.txt` (plain URL-per-line)
+  • `learnhard-cn/free_proxy_ss` `free` (base64)
+  • `nodefree.me` — **indirect page-listing** source: the crawler fetches the
+    blog index, follows the first article link (`…/p/N.html`), then takes the
+    first subscription address link on that page (the v2ray `.txt`
+    subscription) and decodes it.  Fetched last so the reliable `zhuhaiuk`
+    source wins on de-duplication.
+  New sources can be added **without code changes** by editing
+  `crawler/config/sources.yaml` (or passing `--sources-config PATH`). The
+  declarative config supports `direct` and `indirect` source kinds, per-source
+  `via_proxy` flags, and composable URL-matching predicates (`contains`,
+  `ends_with`, `starts_with`, `all`, `any`).
+  Any additional subscription can also be plugged in at runtime via the
+  `EXTRA_SUBS` env var.
 - The container **re-crawls on every start**, so a restart always picks up new
   nodes. If you need a *static* node set, set `EXTRA_SUBS` and pin the image tag.
 - No TUN / `NET_ADMIN` required — pure forwarding on `mixed-port`.
