@@ -38,8 +38,18 @@ sources:
   # ───────────────────────────────────────────────────────────────────────────
 
   # zhuhaiuk/free-nodes — the most reliable direct source.
-  # CDN variant (jsdelivr) and raw GitHub variant, both verified reachable.
+  # NOTE: `cdn.jsdelivr.net` is intermittently GFW-blocked/slow from some
+  # networks (returns 000 / connection reset). `fastly.jsdelivr.net` serves the
+  # identical file over a different Fastly POP and is reachable directly, so it
+  # is the primary here; the original jsdelivr URL is kept as a fallback entry
+  # (it fails fast ~0.1s when blocked and costs nothing; it wins on networks
+  # where fastly.jsdelivr.net is the one that's blocked).
   - name: "zhuhai-cdn"
+    url: "https://fastly.jsdelivr.net/gh/zhuhaiuk/free-nodes@main/nodes.txt"
+    timeout: 25
+    via_proxy: false
+
+  - name: "zhuhai-cdn-jsdelivr-fallback"
     url: "https://cdn.jsdelivr.net/gh/zhuhaiuk/free-nodes@main/nodes.txt"
     timeout: 25
     via_proxy: false
@@ -51,6 +61,11 @@ sources:
 
   # zhuhaiuk/free-nodes extra nodes (base64-encoded, distinct node set).
   - name: "zhuhai-extra-cdn"
+    url: "https://fastly.jsdelivr.net/gh/zhuhaiuk/free-nodes@main/extra_nodes.txt"
+    timeout: 25
+    via_proxy: false
+
+  - name: "zhuhai-extra-cdn-jsdelivr-fallback"
     url: "https://cdn.jsdelivr.net/gh/zhuhaiuk/free-nodes@main/extra_nodes.txt"
     timeout: 25
     via_proxy: false
@@ -66,22 +81,47 @@ sources:
     timeout: 25
     via_proxy: false
 
-  # Pawdroid Free-servers — base64 subscription blob, verified reachable.
+  # Pawdroid Free-servers — base64 subscription blob.
+  # raw.githubusercontent.com is GFW-blocked from some networks (connection
+  # reset); the ghproxy.net mirror (https://<ghproxy>/raw.githubusercontent.com/...)
+  # is directly reachable and serves the identical content, so it is added as a
+  # fallback. Both are fetched; the de-duplication in `harvest` keeps the first
+  # occurrence of each node URL, so a duplicate URL is harmless.
   - name: "pawdroid-sub"
     url: "https://raw.githubusercontent.com/Pawdroid/Free-servers/master/sub"
     timeout: 25
     via_proxy: false
 
-  # ermaozi get_subscribe — plain URL-per-line, verified reachable.
+  - name: "pawdroid-ghproxy"
+    url: "https://ghproxy.net/https://raw.githubusercontent.com/Pawdroid/Free-servers/master/sub"
+    timeout: 40
+    via_proxy: false
+
+  # ermaozi get_subscribe — plain URL-per-line.
+  # One of the larger free pools (~65 nodes). raw.githubusercontent.com is
+  # GFW-blocked from some networks, so a ghproxy.net mirror is added as a
+  # directly-reachable fallback (timeout raised: the mirror is slower).
   - name: "ermaozi-v2ray"
     url: "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt"
     timeout: 25
     via_proxy: false
 
-  # learnhard-cn free_proxy_ss — base64-encoded lines, verified reachable.
+  - name: "ermaozi-ghproxy"
+    url: "https://ghproxy.net/https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt"
+    timeout: 40
+    via_proxy: false
+
+  # learnhard-cn free_proxy_ss — base64-encoded lines.
+  # raw.githubusercontent.com is GFW-blocked from some networks; added a
+  # directly-reachable ghproxy.net mirror fallback (slower — timeout 40).
   - name: "learnhard-ss"
     url: "https://raw.githubusercontent.com/learnhard-cn/free_proxy_ss/main/free"
     timeout: 25
+    via_proxy: false
+
+  - name: "learnhard-ghproxy"
+    url: "https://ghproxy.net/https://raw.githubusercontent.com/learnhard-cn/free_proxy_ss/main/free"
+    timeout: 40
     via_proxy: false
 
   # aiboboxx/v2rayfree — date-stamped base64 subscription.

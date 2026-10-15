@@ -108,17 +108,33 @@ COPY ci/docker/entrypoint.sh /entrypoint.sh
 # to download them (which could time out on a slow / blocked network).  If the
 # download fails the build still succeeds — mihomo will retry at runtime via
 # the geox-url configured in the template.
+#
+# Use fastly.jsdelivr.net (NOT testingcf.jsdelivr.net): the Cloudflare mirror
+# intermittently returns a "429 Too Many Requests" HTML page with HTTP 200 for
+# rate-limited asset requests, which curl -f treats as success and mihomo then
+# saves as a .dat -> corrupt protobuf -> `mihomo -t` abort + proxy never starts.
+# The post-download size/signature guard below rejects any such page anyway.
 RUN set -ex; \
     chmod +x /usr/local/bin/mihomo /usr/local/bin/freebox ${APP_DIR}/dashboard.py /entrypoint.sh; \
     python3 -c "import yaml" ; \
     mihomo -v; \
     cd /etc/mihomo; \
     for f in geosite.dat country.mmdb geoip.dat; do \
-      curl -fsSL --max-time 90 -o "$f" \
-        "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/$f" \
-      || curl -fsSL --max-time 90 -o "$f" \
-        "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/$f" \
-      || echo "WARN: $f download failed; mihomo will retry at runtime"; \
+      ok=0; \
+      for m in https://fastly.jsdelivr.net https://cdn.jsdelivr.net; do \
+        curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+              --connect-timeout 15 --max-time 300 \
+              -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36" \
+              -o "$f.dl" "$m/gh/MetaCubeX/meta-rules-dat@release/$f" || continue; \
+        sz=$(stat -c%s "$f.dl" 2>/dev/null || echo 0); \
+        head4=$(head -c 4 "$f.dl" 2>/dev/null); \
+        if [ "$sz" -gt 1048576 ] && [ "$head4" != "429:" ] && [ "$head4" != "<!DO" ] && [ "$head4" != "<htm" ]; then \
+          mv -f "$f.dl" "$f"; ok=1; break; \
+        else echo "WARN: $f from $m looks corrupt (sz=$sz); trying next mirror"; rm -f "$f.dl"; \
+        fi; \
+      done; \
+      [ "$ok" = "0" ] && echo "WARN: $f download failed/corrupt; mihomo will retry at runtime via geox-url"; \
+      sleep 3; \
     done; \
     ls -lh /etc/mihomo/*.dat /etc/mihomo/*.mmdb 2>/dev/null || true
 

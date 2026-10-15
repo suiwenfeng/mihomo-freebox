@@ -172,6 +172,7 @@ Predicate types: `contains`, `ends_with`, `starts_with`, `all` (AND), `any` (OR)
 | `MAX_NODES` | `150` | Cap on nodes per crawl |
 | `RUN_CRAWL_TEST` | `0` | `1` → run the TCP probe before writing nodes (slower) |
 | `PROBE_TIMEOUT` | `2` | Per-node TCP probe timeout (seconds) |
+| `CRAWL_TIMEOUT` | `150` | Overall crawl budget (seconds). Raised from 90s to fit the slower reachable mirror sources (see below). Set higher in slow/blocked networks or `0` to disable the bound. |
 | `EXTRA_SUBS` | `""` | Extra subscription URLs (newline/comma separated) |
 | `PROXY_URL` | auto-detect | Preferred proxy override (`socks5://host:port` or `host:port`) |
 | `SOCKS5_PROXY` | auto-detect | Fallback proxy env var (same format) |
@@ -253,17 +254,26 @@ rebuilds.
 
 - **node sources** — the crawler harvests from multiple free-node subscription
   sources (listed in `crawler/config/sources.yaml`):
-  • `zhuhaiuk/free-nodes` `nodes.txt` (CDN + raw mirror, base64)
-  • `zhuhaiuk/free-nodes` `extra_nodes.txt` (CDN + raw mirror, base64, distinct nodes)
+  • `zhuhaiuk/free-nodes` `nodes.txt` (jsdelivr CDN **+ fastly.jsdelivr.net mirror**) + raw GitHub mirror, base64
+  • `zhuhaiuk/free-nodes` `extra_nodes.txt` (jsdelivr CDN + fastly mirror) + raw GitHub mirror, base64, distinct nodes
   • `shuaidaoya` FreeNodes Gist (base64, percent-encoded)
-  • `Pawdroid/Free-servers` `sub` (base64 blob)
-  • `ermaozi/get_subscribe` `v2ray.txt` (plain URL-per-line)
-  • `learnhard-cn/free_proxy_ss` `free` (base64)
+  • `Pawdroid/Free-servers` `sub` (base64 blob; + `ghproxy.net` mirror)
+  • `ermaozi/get_subscribe` `v2ray.txt` (plain URL-per-line; + `ghproxy.net` mirror, the largest pool)
+  • `learnhard-cn/free_proxy_ss` `free` (base64; + `ghproxy.net` mirror)
   • `nodefree.me` — **indirect page-listing** source: the crawler fetches the
     blog index, follows the first article link (`…/p/N.html`), then takes the
     first subscription address link on that page (the v2ray `.txt`
     subscription) and decodes it.  Fetched last so the reliable `zhuhaiuk`
     source wins on de-duplication.
+
+  > **Why mirrors were added.** Several sources sit on `raw.githubusercontent.com`
+  > or `cdn.jsdelivr.net`, which the GFW blocks/interferes with from many
+  > networks (connection reset / `000`). The crawler's SOCKS5 proxy fallback
+  > (`127.0.0.1:7890`) only helps once mihomo is already up — on a **fresh
+  > container start** it is not, so those sources return 0 nodes and the crawl
+  > shrinks to a handful. The added `ghproxy.net` / `fastly.jsdelivr.net` mirror
+  > entries are reachable *directly*, breaking the bootstrap dependency. They are
+  > slower than a native fetch, so `CRAWL_TIMEOUT` was raised (default 150s).
   New sources can be added **without code changes** by editing
   `crawler/config/sources.yaml` (or passing `--sources-config PATH`). The
   declarative config supports `direct` and `indirect` source kinds, per-source

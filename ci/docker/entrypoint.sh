@@ -72,7 +72,10 @@ else
 fi
 # Bound the crawl so a down/flaky network cannot delay a fresh start forever;
 # on timeout we fall through to the last-known provider (or the baked snapshot).
-CRAWL_TIMEOUT="${CRAWL_TIMEOUT:-90}"
+# Default raised to 150s to accommodate the ghproxy.net / fastly.jsdelivr.net
+# mirror sources, whose fetches are slower than direct GitHub (which fails fast
+# ~0.1s when GFW-blocked). Override with CRAWL_TIMEOUT=<secs> to tune.
+CRAWL_TIMEOUT="${CRAWL_TIMEOUT:-150}"
 if ! ( timeout "${CRAWL_TIMEOUT}" "${CRAWL_ARGS[@]}" ); then
   rc=$?
   if [ "${rc}" = "124" ]; then

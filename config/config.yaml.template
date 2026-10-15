@@ -86,6 +86,8 @@ dns:
     - "fastly.jsdelivr.net"
     - "raw.githubusercontent.com"
     - "*.github.io"
+    - "ghproxy.net"
+    - "*.ghproxy.net"
 
 # Geo data auto-downloads from the MetaCubeX/meta-rules-dat release via a
 # jsDelivr CDN mirror (reachable behind the GFW).  The Dockerfile also
@@ -93,10 +95,15 @@ dns:
 # refresh them at runtime.
 geodata-mode: true
 geox-url:
-  geoip: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
-  geosite: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
-  mmdb: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
-  asn: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"
+  # Prefer fastly.jsdelivr.net over testingcf.jsdelivr.net: the Cloudflare
+  # (testingcf) mirror intermittently returns a "429 Too Many Requests" HTML
+  # page WITH HTTP 200, which mihomo then saves as geoip.dat/geosite.dat and
+  # fails to parse as protobuf -> `mihomo -t` aborts and the proxy never starts.
+  # fastly.jsdelivr.net serves the real binary (or fails clean), so it is safe.
+  geoip: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
+  geosite: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
+  mmdb: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
+  asn: "https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"
 
 # Proxy providers.  `free-nodes` is a local file rewritten by the crawler on
 # every start -> restart:always always sees fresh nodes.
